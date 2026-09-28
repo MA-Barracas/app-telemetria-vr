@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meta Quest WebXR POC</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px;
+      background: #111;
+      color: #eee;
+    }
+    h1 { margin-bottom: 6px; }
+    .card {
+      background: #1c1c1c;
+      border: 1px solid #444;
+      border-radius: 12px;
+      padding: 16px;
+      margin: 14px 0;
+    }
+    .ok { color: #72f59a; font-weight: 700; }
+    .bad { color: #ff7777; font-weight: 700; }
+    .warn { color: #ffd36a; font-weight: 700; }
+    button {
+      font-size: 1.15rem;
+      padding: 14px 20px;
+      margin: 8px 8px 8px 0;
+      border-radius: 10px;
+      border: 0;
+      cursor: pointer;
+    }
+    pre {
+      overflow: auto;
+      white-space: pre-wrap;
+      background: #090909;
+      padding: 14px;
+      border-radius: 8px;
+      min-height: 120px;
+    }
+    code { color: #ddd; }
+  </style>
+</head>
+<body>
+
+<h1>Meta Quest → WebXR → Render</h1>
+<p>POC mínima para comprobar visor, mandos y WebSocket.</p>
+
+<div class="card">
+  <div>1. WebSocket: <span id="wsStatus" class="warn">conectando...</span></div>
+  <div>2. WebXR: <span id="xrStatus" class="warn">comprobando...</span></div>
+  <div>3. Paquetes confirmados por Render: <strong id="acks">0</strong></div>
+</div>
+
+<div class="card">
+  <button id="vrButton" disabled>ENTRAR EN VR</button>
+  <button id="stopButton" disabled>SALIR DE VR</button>
+  <p>
+    Cuando entres en VR verás solo un fondo oscuro. Es correcto:
+    esta prueba no pretende dibujar un mundo 3D.
+  </p>
+</div>
+
+<div class="card">
+  <strong>Últimos datos medidos EN LAS GAFAS:</strong>
+  <pre id="localData">Todavía no hay datos XR.</pre>
+</div>
+
+<div class="card">
+  <strong>Última respuesta recibida DESDE RENDER:</strong>
+  <pre id="serverData">Todavía no hay ACK.</pre>
+</div>
+
+<script>
+let socket = null;
+let xrSession = null;
+let lastSend = 0;
+let ackCount = 0;
+
+const wsStatus = document.getElementById("wsStatus");
+const xrStatus = document.getElementById("xrStatus");
+const vrButton = document.getElementById("vrButton");
+const stopButton = document.getElementById("stopButton");
+const localData = document.getElementById("localData");
+const serverData = document.getElementById("serverData");
+const acks = document.getElementById("acks");
+
+function connectWebSocket() {
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${protocol}://${location.host}/ws`;
+
+  socket = new WebSocket(url);
+
+  socket.onopen = () => {
+    wsStatus.textContent = "CONECTADO";
+    wsStatus.className = "ok";
+  };
+
+  socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.ack !== undefined) {
+      ackCount = data.ack;
+      acks.textContent = ackCount;
+      serverData.textContent = JSON.stringify(data, null, 2);
+    }
+  };
+
+  socket.onerror = () => {
+    wsStatus.textContent = "ERROR";
+    wsStatus.className = "bad";
+  };
+
+  socket.onclose = () => {
+    wsStatus.textContent = "DESCONECTADO";
+    wsStatus.className = "bad";
+
+    // Render puede reiniciarse/despertarse. Reintentamos.
+    setTimeout(connectWebSocket, 2000);
+  };
+}
+
+async function checkXR() {
+  if (!navigator.xr) {
+    xrStatus.textContent = "NO DISPONIBLE EN ESTE NAVEGADOR";
+    xrStatus.className = "bad";
+    return;
+  }
+
+  try {
+    const supported = await navigator.xr.isSessionSupported("immersive-vr");
+
+    if (supported) {
+      xrStatus.textContent = "IMMERSIVE-VR DISPONIBLE";
+      xrStatus.className = "ok";
+      vrButton.disabled = false;
+    } else {
+      xrStatus.textContent = "IMMERSIVE-VR NO SOPORTADO";
+      xrStatus.className = "bad";
+    }
+  } catch (err) {
+    xrStatus.textContent = "ERROR COMPROBANDO WEBXR";
+    xrStatus.className = "bad";
+    console.error(err);
+  }
+}
+
+async function startVR() {
+  try {
+    xrSession = await navigator.xr.requestSession("immersive-vr");
+
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl", {
+      xrCompatible: true,
+      alpha: false,
+      antialias: false
+    });
+
+    if (!gl) {
+      throw new Error("No se pudo crear contexto WebGL");
+    }
+
+    await gl.makeXRCompatible();
+
+    const layer = new XRWebGLLayer(xrSession, gl);
+    xrSession.updateRenderState({ baseLayer: layer });
+
+    let referenceSpace;
+
+    try {
+      referenceSpace = await xrSession.requestReferenceSpace("local-floor");
+    } catch (_) {
+      referenceSpace = await xrSession.requestReferenceSpace("local");
+    }
+
+    vrButton.disabled = true;
+    stopButton.disabled = false;
+
+    xrSession.addEventListener("end", () => {
+      xrSession = null;
+      vrButton.disabled = false;
+      stopButton.disabled = true;
+    });
+
+    function onXRFrame(time, frame) {
+      if (!xrSession) return;
+
+      xrSession.requestAnimationFrame(onXRFrame);
+
+      const pose = frame.getViewerPose(referenceSpace);
+      if (!pose) return;
+
+      // Renderizamos únicamente un fondo oscuro.
+      const glLayer = xrSession.renderState.baseLayer;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
+
+      for (const view of pose.views) {
+        const viewport = glLayer.getViewport(view);
+        gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+        gl.clearColor(0.04, 0.06, 0.10, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      }
+
+      // 10 muestras/segundo bastan para esta validación.
+      if (time - lastSend < 100) return;
+      lastSend = time;
+
+      const hp = pose.transform.position;
+      const hq = pose.transform.orientation;
+
+      const packet = {
+        client_time_ms: performance.now(),
+        head: {
+          x: hp.x, y: hp.y, z: hp.z,
+          qx: hq.x, qy: hq.y, qz: hq.z, qw: hq.w
+        },
+        controllers: {}
+      };
+
+      for (const input of xrSession.inputSources) {
+        if (!input.handedness || input.handedness === "none") continue;
+
+        // gripSpace representa mejor la posición física del mando.
+        const space = input.gripSpace || input.targetRaySpace;
+        if (!space) continue;
+
+        const cp = frame.getPose(space, referenceSpace);
+        if (!cp) continue;
+
+        const p = cp.transform.position;
+        const q = cp.transform.orientation;
+
+        let trigger = 0;
+        let squeeze = 0;
+
+        if (input.gamepad) {
+          if (input.gamepad.buttons.length > 0) {
+            trigger = input.gamepad.buttons[0].value;
+          }
+          if (input.gamepad.buttons.length > 1) {
+            squeeze = input.gamepad.buttons[1].value;
+          }
+        }
+
+        packet.controllers[input.handedness] = {
+          x: p.x, y: p.y, z: p.z,
+          qx: q.x, qy: q.y, qz: q.z, qw: q.w,
+          trigger,
+          squeeze
+        };
+      }
+
+      localData.textContent = JSON.stringify(packet, null, 2);
+
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(packet));
+      }
+    }
+
+    xrSession.requestAnimationFrame(onXRFrame);
+
+  } catch (err) {
+    alert("No se pudo entrar en VR: " + err.message);
+    console.error(err);
+  }
+}
+
+async function stopVR() {
+  if (xrSession) {
+    await xrSession.end();
+  }
+}
+
+vrButton.addEventListener("click", startVR);
+stopButton.addEventListener("click", stopVR);
+
+connectWebSocket();
+checkXR();
+</script>
+</body>
+</html>
