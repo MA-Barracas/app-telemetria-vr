@@ -1,38 +1,20 @@
-# Meta Quest WebXR POC
+# Meta Quest WebXR POC v2
 
-Prueba mínima:
+- varias Quest simultáneas
+- ID por gafa (Q01, Q02...)
+- HUD de telemetría dentro de VR
+- dashboard en `/dashboard`
+- WebSockets Quest -> Render -> navegador
 
-Meta Quest Browser -> WebXR -> WSS -> FastAPI en Render
+## Actualizar
+Reemplaza los archivos del repo por estos y haz push. Render redeployará.
 
-## Archivos
+## Quest
+1. Abre la URL principal.
+2. Pon Q01/Q02/etc.
+3. `CONECTAR ESTA GAFA`.
+4. `ENTRAR EN VR`.
+5. El HUD muestra HEAD, LEFT, RIGHT, XYZ, trigger y grip.
 
-- `main.py`: FastAPI + WebSocket.
-- `index.html`: WebXR mínimo.
-- `requirements.txt`: dependencias Python.
-- `render.yaml`: configuración opcional para Render.
-
-## Render
-
-Build Command:
-
-```bash
-pip install -r requirements.txt
-```
-
-Start Command:
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port $PORT
-```
-
-Después abre la URL HTTPS de Render desde **Meta Quest Browser**.
-
-## Comprobaciones
-
-- `/health` debe devolver `{"ok":true}`.
-- `/latest` muestra el último paquete recibido desde las Quest.
-- La página principal debe mostrar:
-  - WebSocket: CONECTADO
-  - WebXR: IMMERSIVE-VR DISPONIBLE
-
-Pulsa `ENTRAR EN VR`, mueve cabeza y mandos y aprieta el gatillo.
+## PC
+Abre `https://TU-APP.onrender.com/dashboard`.
